@@ -56,7 +56,7 @@ def sql_to_spec(query):
         return full_select_func(tokens, 'distinct')
 
     @debug_print
-    def select_func(tokens=None):
+    def select_func(*tokens):
         return full_select_func(tokens, 'select')
 
     def full_select_func(tokens=None, method='select'):
@@ -68,8 +68,10 @@ def sql_to_spec(query):
                   }.get(method, 'find')
         if tokens is None:
             return
+        tokens = fix_token_list([*tokens])
+        tokens = tokens[2][0]
         ret = {action: True,
-               'fields': {item: 1 for item in fix_token_list(tokens.asList())}}
+               'fields': {item: 1 for item in tokens}}
         if ret['fields'].get('id'):  # Use _id and not id
             # Drop _id from fields since mongo always return _id
             del(ret['fields']['id'])
@@ -80,40 +82,50 @@ def sql_to_spec(query):
         return ret
 
     @debug_print
-    def where_func(tokens=None):
+    def where_func(*tokens):
         """
         Take tokens and return a dictionary.
         """
         if tokens is None:
             return
 
-        tokens = fix_token_list(tokens.asList()) + [None, None, None]
+        tokens = fix_token_list([*tokens]) + [None, None, None]
+        tokens = tokens[2][0]
         cond = {'!=': '$ne',
                 '>': '$gt',
                 '>=': '$gte',
                 '<': '$lt',
                 '<=': '$lte',
+                '=': '$eq',
+                'in': '$in',
+                'unlike': '$unlike',
                 'like': '$regex'}.get(tokens[1])
 
+        #print(f'where Tokens: {tokens}, {type(tokens)}')
         find_value = tokens[2].strip('"').strip("'")
-        if cond == '$regex':
-            if find_value[0] != '%':
-                find_value = "^" + find_value
-            if find_value[-1] != '%':
-                find_value = find_value + "$"
-            find_value = find_value.strip("%")
+        if cond == '$regex' or cond == '$unlike':
+            find_value = find_value.replace('%', '.*')
+            find_value = f'^{find_value}$'
+        elif cond == '$in':
+            find_value = [v.strip() for v in find_value.split(',')]
 
         if cond is None:
             expr = {tokens[0]: find_value}
+        elif cond == '$regex':
+            expr = {tokens[0]: {cond: find_value, '$options': 'xi'}}
+        elif cond == '$unlike':
+            expr = {tokens[0]: {'$not': {'$regex': find_value, '$options': 'xi'}}}
         else:
             expr = {tokens[0]: {cond: find_value}}
 
+        #print('where expr', expr)
         return expr
 
     @debug_print
-    def combine(tokens=None):
+    def combine(*tokens):
         if tokens:
-            tokens = fix_token_list(tokens.asList())
+            tokens = fix_token_list([*tokens])
+            tokens = tokens[2]
             if len(tokens) == 1:
                 return tokens
             else:
@@ -132,7 +144,7 @@ def sql_to_spec(query):
     SELECT = Suppress(CaselessKeyword('SELECT'))
     WHERE = Suppress(CaselessKeyword('WHERE'))
     FROM = Suppress(CaselessKeyword('FROM'))
-    CONDITIONS = oneOf("= != < > <= >= like", caseless=True)
+    CONDITIONS = oneOf("= != < > <= >= like in unlike", caseless=True)
     #CONDITIONS = (Keyword("=") | Keyword("!=") |
     #              Keyword("<") | Keyword(">") |
     #              Keyword("<=") | Keyword(">="))
@@ -162,7 +174,7 @@ def sql_to_spec(query):
     LIMIT = (Suppress(CaselessKeyword('LIMIT')) + word_match).setParseAction(lambda t: {'limit': t[0]})
     SKIP = (Suppress(CaselessKeyword('SKIP')) + word_match).setParseAction(lambda t: {'skip': t[0]})
     from_table = (FROM + word_match).setParseAction(
-        lambda t: {'collection': t.asList()[0]})
+        lambda t: {'collection': [*t][0]})
     #word = ~(AND | OR) + word_match
 
     operation_term = (select_distinct | select_count | select_fields)   # place holder for other SQL statements. ALTER, UPDATE, INSERT
@@ -180,11 +192,11 @@ def sql_to_spec(query):
 
     ret = expr.parseString(query.strip())
     query_dict = {}
-    _ = map(query_dict.update, ret)
+    _ = list(map(lambda r: query_dict.update(r), ret))
     return query_dict
 
 
-def spec_str(spec):
+def spec_str(spec, pymongo_format=False):
     """
     Change a spec to the json object format used in mongo.
     eg. Print dict in python gives: {'a':'b'}
@@ -195,12 +207,13 @@ def spec_str(spec):
     :return: String. The spec as it is represended in the mongodb shell examples.
     """
 
+    quote = "'" if pymongo_format else ""
     if spec is None:
         return "{}"
     if isinstance(spec, list):
-        out_str = "[" + ', '.join([spec_str(x) for x in spec]) + "]"
+        out_str = "[" + ', '.join([spec_str(x, pymongo_format) for x in spec]) + "]"
     elif isinstance(spec, dict):
-        out_str = "{" + ', '.join(["{}:{}".format(x, spec_str(spec[x])
+        out_str = "{" + ', '.join(["{}{}{}:{}".format(quote, x, quote, spec_str(spec[x], pymongo_format)
                                                   ) for x in sorted(spec)]) + "}"
     elif spec and isinstance(spec, str) and not spec.isdigit():
         out_str = "'" + spec + "'"
@@ -210,7 +223,7 @@ def spec_str(spec):
     return out_str
 
 @debug_print
-def create_mongo_shell_query(query_dict):
+def create_mongo_shell_query(query_dict, pymongo_format=False):
     """
     Create the queries similar to what you will us in mongo shell
     :param query_dict: Dictionary. Internal data structure.
@@ -221,13 +234,13 @@ def create_mongo_shell_query(query_dict):
     shell_query = "db." + query_dict.get('collection') + "."
 
     if query_dict.get('find'):
-        shell_query += 'find({}, {})'.format(spec_str(query_dict.get('spec')),
-                                             spec_str(query_dict.get('fields')))
+        shell_query += 'find({}, {})'.format(spec_str(query_dict.get('spec'), pymongo_format),
+                                             spec_str(query_dict.get('fields'), pymongo_format))
     elif query_dict.get('distinct'):
         shell_query += 'distinct({})'.format(spec_str(",".join(
-            [k for k in query_dict.get('fields').keys() if query_dict['fields'][k]])))
+            [k for k in query_dict.get('fields').keys() if query_dict['fields'][k]]), pymongo_format))
     elif query_dict.get('count'):
-        shell_query += 'count({})'.format(spec_str(query_dict.get('spec')))
+        shell_query += 'count({})'.format(spec_str(query_dict.get('spec'), pymongo_format))
     if query_dict.get('skip'):
         shell_query += ".skip({})".format(query_dict.get('skip'))
 
@@ -249,8 +262,8 @@ def execute_query(spec, connection_string=None):
     if connection_string is None:
         connection_string = "mongo://localhost:27017/test"
     if connection_string:
-        print "connection to", connection_string
-    print "NOT IMPLEMENTED: Must still write the code to connect to mongodb"
+        print("connection to", connection_string)
+    print("NOT IMPLEMENTED: Must still write the code to connect to mongodb")
     return []
 
 if __name__ == "__main__":
@@ -275,9 +288,9 @@ if __name__ == "__main__":
 
     (options, args) = parser.parse_args()
     if not args:
-        parser.print_help()
-        sys_exit(1)
-
+        args = ["SELECT name, phone_no FROM users WHERE name = 'bob the builder' AND hourly_rate <= 1000 OR account_number IN '1111,2222' and last_name unlike '%lonikar%' "]
+        #parser.print_help()
+        #sys_exit(1)
     ## Reconstruct the query string
     query = ' '.join([arg if ' ' not in arg else "'" + arg + "'" for arg in args])
     if query[0] in ['"', "'"] and query[0] == query[-1]:
@@ -286,9 +299,8 @@ if __name__ == "__main__":
         DEBUG = False  # TODO: Reverse this logic when DEBUG defaults to false.
     query_dict = sql_to_spec(query)
     if options.no_db or options.verbose:
-        print "The SQL query: ", query
-        print "is this mongo query: ", create_mongo_shell_query(query_dict)
-
+        print("The SQL query: ", query)
+        print("is this mongo query: ", create_mongo_shell_query(query_dict, pymongo_format=True))
     elif not options.no_db:
         result = execute_query(query_dict, options.mongo_server)
-        print result
+        print(result)

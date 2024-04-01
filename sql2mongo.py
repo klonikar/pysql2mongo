@@ -288,19 +288,22 @@ if __name__ == "__main__":
 
     (options, args) = parser.parse_args()
     if not args:
-        args = ["SELECT name, phone_no FROM users WHERE name = 'bob the builder' AND hourly_rate <= 1000 OR account_number IN '1111,2222' and last_name unlike '%lonikar%' "]
+        args = ["SELECT name, phone_no FROM users WHERE name = 'bob the builder' AND hourly_rate <= 1000 OR account_number IN '1111,2222' and last_name like '%lonikar%' ",
+        'select first_name, last_name from employees where last_name unlike "%lsp01%flight%" ',
+        'select dept_name, dept_function from department where dept_name like "HUMAN%" ']
         #parser.print_help()
         #sys_exit(1)
     ## Reconstruct the query string
-    query = ' '.join([arg if ' ' not in arg else "'" + arg + "'" for arg in args])
-    if query[0] in ['"', "'"] and query[0] == query[-1]:
-        query = query.strip(query[0])
-    if not options.verbose:
-        DEBUG = False  # TODO: Reverse this logic when DEBUG defaults to false.
-    query_dict = sql_to_spec(query)
-    if options.no_db or options.verbose:
-        print("The SQL query: ", query)
-        print("is this mongo query: ", create_mongo_shell_query(query_dict, pymongo_format=True))
-    elif not options.no_db:
-        result = execute_query(query_dict, options.mongo_server)
-        print(result)
+    #query = ' '.join([arg if ' ' not in arg else "'" + arg + "'" for arg in args])
+    for query in args:
+        if query[0] in ['"', "'"] and query[0] == query[-1]:
+            query = query.strip(query[0])
+        if not options.verbose:
+            DEBUG = False  # TODO: Reverse this logic when DEBUG defaults to false.
+        query_dict = sql_to_spec(query)
+        if options.no_db or options.verbose:
+            print("The SQL query: ", query)
+            print("is this mongo query: ", create_mongo_shell_query(query_dict, pymongo_format=True))
+        elif not options.no_db:
+            result = execute_query(query_dict, options.mongo_server)
+            print(result)

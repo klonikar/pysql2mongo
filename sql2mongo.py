@@ -289,7 +289,7 @@ if __name__ == "__main__":
     (options, args) = parser.parse_args()
     if not args:
         args = ["SELECT name, phone_no FROM users WHERE name = 'bob the builder' AND hourly_rate <= 1000 OR account_number IN '1111,2222' and last_name like '%lonikar%' ",
-        'select first_name, last_name from employees where last_name unlike "%lsp01%flight%" ',
+        'select first_name, last_name from employees where last_name unlike "%Tom%Harry%" ',
         'select dept_name, dept_function from department where dept_name like "HUMAN%" ']
         #parser.print_help()
         #sys_exit(1)
